@@ -13,14 +13,14 @@
         "emailTo": {
             "title": "Report Email Address",
             "type": "string",
-            "description": "Email address to deliver the HTML report to. Leave empty to skip sending.",
+            "description": "Email address to deliver the HTML report to. Leave empty to skip sending. If you are on the free plan, use your email which is connected to your Apify account otherwise the email sending will reject it.",
             "editor": "textfield"
         },
         "snapshotStoreName": {
             "title": "Snapshot Store Name",
             "type": "string",
             "description": "Name of the named Key-Value Store used for persistent snapshots across runs.",
-            "default": "apify-monitor-store",
+            "default": "apify-actor-monitor",
             "editor": "textfield"
         }
     },

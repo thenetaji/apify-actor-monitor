@@ -13,7 +13,7 @@ try {
     const {
         apifyToken,
         emailTo,
-        snapshotStoreName = 'apify-monitor-store',
+        snapshotStoreName = 'apify-actor-monitor',
     } = input ?? {};
 
     if (!apifyToken) throw new Error('Input "apifyToken" is required');

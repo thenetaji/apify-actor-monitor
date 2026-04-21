@@ -5,6 +5,8 @@
 
 A self-contained Apify Actor that watches your own Apify account, takes daily snapshots of every actor's performance, and emails you a clean HTML report — no external servers, no database, no third-party email service required.
 
+![alt text](./samples/image.png)
+
 ---
 
 ## What it does
@@ -48,7 +50,7 @@ Each actor row is expandable and shows: monthly revenue/cost/profit/margin, toda
 |---|---|---|---|
 | `apifyToken` | ✅ | — | Your Apify API token. Found at **Console → Settings → Integrations**. |
 | `emailTo` | — | — | Email address to send the report to. Leave blank to skip email (report still saves to KV store). |
-| `snapshotStoreName` | — | `apify-monitor-store` | Name of the Key-Value Store where snapshots and reports are kept. |
+| `snapshotStoreName` | — | `apify-actor-monitor` | Name of the Key-Value Store where snapshots and reports are kept. |
 
 ---
 
@@ -81,7 +83,7 @@ Each actor row is expandable and shows: monthly revenue/cost/profit/margin, toda
 }
 ```
 
-**Key-Value Store** — the named store (`apify-monitor-store` by default) keeps:
+**Key-Value Store** — the named store (`apify-actor-monitor` by default) keeps:
 - `snapshot_YYYY-MM-DD` — the full raw snapshot for each day (indefinitely)
 - `snapshot_latest` — always the most recent snapshot (used for diffing)
 - `report-YYYY-MM-DD` — the HTML report file, openable in any browser
