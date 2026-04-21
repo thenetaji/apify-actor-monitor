@@ -1,0 +1,28 @@
+{
+    "title": "Apify Actor Monitor Input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "apifyToken": {
+            "title": "Apify API Token",
+            "type": "string",
+            "description": "Your Apify API token. Used to fetch analytics data and send the email report.",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "emailTo": {
+            "title": "Report Email Address",
+            "type": "string",
+            "description": "Email address to deliver the HTML report to. Leave empty to skip sending.",
+            "editor": "textfield"
+        },
+        "snapshotStoreName": {
+            "title": "Snapshot Store Name",
+            "type": "string",
+            "description": "Name of the named Key-Value Store used for persistent snapshots across runs.",
+            "default": "apify-monitor-store",
+            "editor": "textfield"
+        }
+    },
+    "required": ["apifyToken"]
+}

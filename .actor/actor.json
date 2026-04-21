@@ -1,0 +1,12 @@
+{
+    "actorSpecification": 1,
+    "name": "apify-actor-monitor",
+    "title": "Apify Actor Monitor",
+    "description": "Monitors your Apify account actor performance. Takes daily snapshots, computes diffs, and delivers an HTML report via email.",
+    "version": "0.1",
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "readme": "../README.md",
+    "minMemoryMbytes": 128,
+    "maxMemoryMbytes": 512
+}
