@@ -7,7 +7,7 @@
  * Status tagging rules:
  *   red    — todayRuns === 0 AND prev had runs, OR todaySuccessRate < 50,
  *             OR costDelta > 2× actor's average daily cost
- *   yellow — newPayingUsers > 0, OR |revenueDelta| > 20% of prevRevenue,
+ *   yellow — newPayingUsersGained > 0, OR |revenueDelta| > 20% of prevRevenue,
  *             OR |runsDelta| > 50% of prev daily avg runs
  *   green  — everything else
  */
@@ -38,11 +38,15 @@ export function computeDiffs(prevSnapshot, currSnapshot) {
         const prevProfitMargin = prev?.profitMargin ?? curr.profitMargin;
         const prevDailyAvgRuns = prev?.dailyRuns?.avg ?? curr.dailyRuns?.avg ?? 0;
         const prevTodayCost = prev?.todayCost ?? 0;
+        const prevPayingUsers = prev?.payingUsers ?? curr.payingUsers;
+        const prevFreeUsers = prev?.freeUsers ?? curr.freeUsers;
 
         const runsDelta = curr.totalRuns - prevTotalRuns;
         const revenueDelta = curr.totalRevenue - prevTotalRevenue;
         const costDelta = curr.totalCost - prevTotalCost;
         const profitMarginDelta = curr.profitMargin - prevProfitMargin;
+        const newPayingUsersGained = curr.payingUsers - prevPayingUsers;
+        const newFreeUsersGained = curr.freeUsers - prevFreeUsers;
 
         const prevSuccessRate =
             prev && prev.totalRuns > 0 ? (prev.succeededRuns / prev.totalRuns) * 100 : null;
@@ -61,7 +65,7 @@ export function computeDiffs(prevSnapshot, currSnapshot) {
         ) {
             status = 'red';
         } else if (
-            (curr.todayPayingUsers ?? 0) > 0 ||
+            newPayingUsersGained > 0 ||
             (prevTotalRevenue > 0 && Math.abs(revenueDelta) > 0.2 * prevTotalRevenue) ||
             (prevDailyAvgRuns > 0 && Math.abs(runsDelta) > 0.5 * prevDailyAvgRuns)
         ) {
@@ -75,8 +79,10 @@ export function computeDiffs(prevSnapshot, currSnapshot) {
             isNew: !prev,
             isRemoved: false,
             // Deltas
-            newPayingUsers: curr.todayPayingUsers ?? 0,
-            newFreeUsers: curr.todayFreeUsers ?? 0,
+            todayPayingUsers: curr.todayPayingUsers ?? 0,
+            todayFreeUsers: curr.todayFreeUsers ?? 0,
+            newPayingUsersGained,
+            newFreeUsersGained,
             runsDelta,
             successRateDelta,
             revenueDelta,
@@ -112,8 +118,10 @@ export function computeDiffs(prevSnapshot, currSnapshot) {
                 actorTitle: prev.actorTitle ?? prev.actorName,
                 isNew: false,
                 isRemoved: true,
-                newPayingUsers: 0,
-                newFreeUsers: 0,
+                todayPayingUsers: 0,
+                todayFreeUsers: 0,
+                newPayingUsersGained: 0,
+                newFreeUsersGained: 0,
                 runsDelta: -prev.totalRuns,
                 successRateDelta: 0,
                 revenueDelta: -prev.totalRevenue,

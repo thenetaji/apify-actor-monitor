@@ -124,6 +124,7 @@ export async function fetchActorUserCounts(token, actorId, month) {
 export async function getAccountSnapshot(token) {
     const month = getCurrentMonth();
     const today = getTodayDate();
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const capturedAt = new Date().toISOString();
 
     log.info('Fetching account-wide analytics', { month, today });
@@ -235,7 +236,9 @@ export async function getAccountSnapshot(token) {
     const accTodayRun = accountRunStats?.dailyStats?.[today] ?? {};
     const accTodayUser = accountUserCounts?.[today] ?? {};
     const accTodayProfit = accountProfitMargin?.dailyProfitMarginStats?.[today]?.allUsersUsd ?? {};
+    const accTodayProfitPaying = accountProfitMargin?.dailyProfitMarginStats?.[today]?.payingUsersUsd ?? {};
     const accTotal = accountProfitMargin?.totalProfitMarginStats?.allUsersUsd ?? {};
+    const accTotalPaying = accountProfitMargin?.totalProfitMarginStats?.payingUsersUsd ?? {};
 
     const todaySucceeded = accTodayRun.SUCCEEDED ?? 0;
     const todayRuns = accTodayRun.TOTAL ?? 0;
@@ -249,15 +252,23 @@ export async function getAccountSnapshot(token) {
         totalCost: accTotal.costUsd ?? 0,
         netProfit: accTotal.profitUsd ?? 0,
         overallMargin: accTotal.margin ?? 0,
+        // Paying vs free revenue split (monthly)
+        payingRevenueMTD: accTotalPaying.revenueUsd ?? 0,
+        freeRevenueMTD: (accTotal.revenueUsd ?? 0) - (accTotalPaying.revenueUsd ?? 0),
         // Today's data
         todayRevenue: accTodayProfit.revenueUsd ?? 0,
         todayCost: accTodayProfit.costUsd ?? 0,
+        // Paying vs free revenue split (today)
+        todayPayingRevenue: accTodayProfitPaying.revenueUsd ?? 0,
+        todayFreeRevenue: (accTodayProfit.revenueUsd ?? 0) - (accTodayProfitPaying.revenueUsd ?? 0),
         todayRuns,
         todaySucceeded,
         todayFailed: (accTodayRun.FAILED ?? 0) + (accTodayRun['TIMED-OUT'] ?? 0),
         todaySuccessRate: todayRuns > 0 ? (todaySucceeded / todayRuns) * 100 : 0,
         todayPayingUsers: accTodayUser.payingUsers ?? 0,
         todayFreeUsers: accTodayUser.freeUsers ?? 0,
+        payingUsersChange: (accTodayUser.payingUsers ?? 0) - (accountUserCounts?.[yesterday]?.payingUsers ?? 0),
+        freeUsersChange: (accTodayUser.freeUsers ?? 0) - (accountUserCounts?.[yesterday]?.freeUsers ?? 0),
         avgCostPer1000Results: accountCostPerK?.totalActorRunsCost?.avgActorRunsCost ?? 0,
     };
 

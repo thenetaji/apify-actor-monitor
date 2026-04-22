@@ -33,3 +33,14 @@ export async function loadLatestSnapshot(store) {
     }
     return snapshot ?? null;
 }
+
+/**
+ * Reads the snapshot for a specific date (YYYY-MM-DD), or null if not found.
+ */
+export async function loadSnapshotForDate(store, date) {
+    const snapshot = await store.getValue(`snapshot_${date}`);
+    if (snapshot) {
+        log.info('Loaded snapshot for date', { date, capturedAt: snapshot.accountSummary?.capturedAt });
+    }
+    return snapshot ?? null;
+}

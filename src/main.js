@@ -1,7 +1,7 @@
 import { Actor, log } from 'apify';
 import { ApifyClient } from 'apify-client';
 import { getAccountSnapshot } from './fetcher.js';
-import { openStore, saveSnapshot, loadLatestSnapshot } from './storage.js';
+import { openStore, saveSnapshot, loadLatestSnapshot, loadSnapshotForDate } from './storage.js';
 import { computeDiffs } from './diff.js';
 import { generateReport } from './report.js';
 
@@ -31,8 +31,11 @@ try {
     // Open named KV store
     const store = await openStore(snapshotStoreName);
 
-    // Load previous snapshot
-    const prevSnapshot = await loadLatestSnapshot(store);
+    // Load previous snapshot — prefer yesterday's dated snapshot so that
+    // multiple same-day runs always compare against the same baseline.
+    // Falls back to the latest saved snapshot (e.g. skipped a day, first run).
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const prevSnapshot = (await loadSnapshotForDate(store, yesterday)) ?? (await loadLatestSnapshot(store));
 
     // Compute diffs
     const diffs = computeDiffs(prevSnapshot, currSnapshot);
@@ -54,7 +57,8 @@ try {
 
     log.info('Generating HTML report...');
     const isFirstRun = prevSnapshot === null;
-    const html = generateReport(accountSummary, diffs, reportUrl, isFirstRun);
+    const fetchErrorCount = currSnapshot.actorSnapshots.filter((a) => a.fetchError).length;
+    const html = generateReport(accountSummary, diffs, reportUrl, isFirstRun, fetchErrorCount);
     if (isFirstRun) log.info('First run detected — baseline snapshot saved. Full comparison report available next run.');
     await store.setValue(reportKey, html, { contentType: 'text/html' });
     log.info('HTML report saved to KV store', { key: reportKey, reportUrl });
