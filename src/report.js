@@ -43,12 +43,62 @@ function signDelta(n) {
   return v >= 0 ? `+${num(v)}` : `${num(v)}`;
 }
 
-// 1. Metric card component
-function card(label, value, sub, accentVar, tooltip = '') {
+// 0a. Inline SVG sparkline from an array of numeric values
+function sparkline(values, w = 80, h = 20, colorVar = 'var(--c-blue)') {
+  if (!values || values.length < 2) return '';
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const xStep = w / (values.length - 1);
+  const points = values
+    .map((v, i) => {
+      const x = +(i * xStep).toFixed(1);
+      const y = +(h - 2 - ((v - min) / range) * (h - 4)).toFixed(1);
+      return `${x},${y}`;
+    })
+    .join(' ');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" fill="none" xmlns="http://www.w3.org/2000/svg" style="color:${colorVar};display:inline-block;vertical-align:middle;"><polyline points="${points}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+// 0b. Top gainers / losers section (shown after revenue split, skipped on first run)
+function gainersLosersSection(diffs, isFirstRun) {
+  if (isFirstRun) return '';
+  const active = diffs.filter((d) => !d.isRemoved && d.revenueDelta !== 0);
+  if (active.length === 0) return '';
+
+  const gainers = [...active].sort((a, b) => b.revenueDelta - a.revenueDelta).filter((d) => d.revenueDelta > 0).slice(0, 3);
+  const losers = [...active].sort((a, b) => a.revenueDelta - b.revenueDelta).filter((d) => d.revenueDelta < 0).slice(0, 3);
+  if (gainers.length === 0 && losers.length === 0) return '';
+
+  const truncate = (s, n = 26) => (s.length > n ? s.slice(0, n - 1) + '\u2026' : s);
+
+  function glRows(actors, cls, sign) {
+    return actors.map((d) => `
+<div class="gl-item">
+  <span class="gl-name">${esc(truncate(d.actorTitle || d.actorName))}</span>
+  <span class="gl-delta ${cls}">${sign}$${Math.abs(d.revenueDelta).toFixed(2)}</span>
+</div>`).join('');
+  }
+
+  return `
+<div class="blk-title">Revenue Movers</div>
+<div class="gl-grid">
+  <div class="gl-col">
+    <div class="gl-head gl-head-gain">Top Gainers</div>
+    ${gainers.length ? glRows(gainers, 'gl-pos', '+') : '<div class="gl-empty">—</div>'}
+  </div>
+  <div class="gl-col">
+    <div class="gl-head gl-head-loss">Top Losers</div>
+    ${losers.length ? glRows(losers, 'gl-neg', '\u2212') : '<div class="gl-empty">—</div>'}
+  </div>
+</div>`;
+}
+function card(label, value, sub, accentVar, tooltip = '', comp = '') {
   return `
 <div class="card"${tooltip ? ` data-tip="${esc(tooltip)}"` : ''} style="--ac:${accentVar}">
   <div class="card-label">${esc(label)}</div>
   <div class="card-value">${value}</div>
+  ${comp ? `<div class="card-comp">${comp}</div>` : ''}
   ${sub ? `<div class="card-sub">${esc(sub)}</div>` : ''}
 </div>`;
 }
@@ -92,7 +142,7 @@ function revenueBar(payingRev, freeRev, payingRevToday, freeRevToday) {
 }
 
 // 3. Actor row renderer
-function renderActorRow(d) {
+function renderActorRow(d, trendData = new Map()) {
   const id = esc(d.actorId);
   const title = esc(d.actorTitle || d.actorName);
 
@@ -111,8 +161,25 @@ function renderActorRow(d) {
     d.isRemoved ? `<span class="badge badge-rm">REMOVED</span>` : '',
   ].join('');
 
+  // Trend sparklines (only shown when 2+ historical data points exist for this actor)
+  const trend = trendData.get(d.actorId);
+  const sparkSection = trend && trend.runs.length >= 2 ? `
+      <div class="dsec dsec-spark">
+        <div class="dsec-head">Trend (7d)</div>
+        <div class="spark-row">
+          <div class="spark-item">
+            <div class="spark-label">Runs</div>
+            ${sparkline(trend.runs, 80, 20, 'var(--c-blue)')}
+          </div>
+          <div class="spark-item">
+            <div class="spark-label">Revenue</div>
+            ${sparkline(trend.revenue, 80, 20, 'var(--c-green)')}
+          </div>
+        </div>
+      </div>` : '';
+
   return `
-<div class="arow" data-status="${d.status}">
+<div class="arow" data-status="${d.status}" data-name="${title.toLowerCase()}" data-revenue="${(d.totalRevenue ?? 0).toFixed(4)}" data-runs="${d.todayRuns ?? 0}" data-rate="${(d.todaySuccessRate ?? 0).toFixed(4)}">
   <div class="arow-hdr" onclick="toggleActor('${id}')">
     <span class="status-pip pip-${d.status}"></span>
     <span class="aname">${title}${badges}</span>
@@ -156,6 +223,7 @@ function renderActorRow(d) {
         <div class="drow"><span>Daily Runs avg</span><span class="dval">${num(d.dailyRuns?.avg, 1)}</span></div>
         <div class="drow"><span>Runs min / max</span><span class="dval">${num(d.dailyRuns?.min)} / ${num(d.dailyRuns?.max)}</span></div>
       </div>
+      ${sparkSection}
 
     </div>
   </div>
@@ -172,7 +240,7 @@ function getSectionInfo(status) {
   return info[status] || '';
 }
 
-function renderSection(actors, status, label, openByDefault) {
+function renderSection(actors, status, label, openByDefault, trendData = new Map()) {
   if (actors.length === 0) return '';
   const infoText = getSectionInfo(status);
   return `
@@ -181,19 +249,24 @@ function renderSection(actors, status, label, openByDefault) {
     <span class="sec-pip pip-${status}"></span>
     <span class="sec-label">${esc(label)}</span>
     <span class="sec-count">${actors.length}</span>
+    <span class="sort-btns" onclick="event.stopPropagation()">
+      <button class="sort-btn" onclick="sortSection('sec-${status}','revenue',this)" data-field="revenue">Rev</button>
+      <button class="sort-btn" onclick="sortSection('sec-${status}','runs',this)" data-field="runs">Runs</button>
+      <button class="sort-btn" onclick="sortSection('sec-${status}','rate',this)" data-field="rate">Rate</button>
+    </span>
     <svg class="sec-chev" id="sc-${status}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"${openByDefault ? '' : ' style="transform:rotate(-90deg)"'}>
       <polyline points="5 8 10 13 15 8"/>
     </svg>
   </div>
   <div class="sec-body" id="sec-${status}"${openByDefault ? '' : ' style="display:none"'}>
     <div class="sec-info">${infoText}</div>
-    ${actors.map(renderActorRow).join('\n')}
+    ${actors.map((d) => renderActorRow(d, trendData)).join('\n')}
   </div>
 </div>`;
 }
 
 // 5. Main report HTML generator
-export function generateReport(accountSummary, diffs, reportUrl = null, isFirstRun = false, fetchErrorCount = 0) {
+export function generateReport(accountSummary, diffs, reportUrl = null, isFirstRun = false, fetchErrorCount = 0, trendData = new Map(), prevAccountSummary = null) {
   const date = accountSummary.today;
   const timeStr = new Date(accountSummary.capturedAt).toISOString().slice(11, 19);
 
@@ -210,6 +283,26 @@ export function generateReport(accountSummary, diffs, reportUrl = null, isFirstR
 
   const todayProfit = accountSummary.todayRevenue - accountSummary.todayCost;
 
+  // Comparison helpers — show prev-day values on today's cards when prevAccountSummary is available
+  const prevDate = prevAccountSummary?.today ?? null;
+  const prevDateLabel = prevDate ? prevDate.slice(5) : '';
+  function cmpMoney(prevVal, currVal) {
+    if (!prevAccountSummary || prevVal == null) return '';
+    const diff = currVal - prevVal;
+    const clr = diff >= 0 ? 'var(--pos)' : 'var(--neg)';
+    const sign = diff >= 0 ? '+' : '\u2212';
+    const absDiff = '$' + Math.abs(diff).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `vs ${money(prevVal)} on ${prevDateLabel} <span style="color:${clr}">(${sign}${absDiff})</span>`;
+  }
+  function cmpNum(prevVal, currVal) {
+    if (!prevAccountSummary || prevVal == null) return '';
+    const diff = currVal - prevVal;
+    const clr = diff >= 0 ? 'var(--pos)' : 'var(--neg)';
+    const sign = diff >= 0 ? '+' : '\u2212';
+    return `vs ${num(prevVal)} on ${prevDateLabel} <span style="color:${clr}">(${sign}${num(Math.abs(diff))})</span>`;
+  }
+  const prevTodayProfit = prevAccountSummary ? (prevAccountSummary.todayRevenue - prevAccountSummary.todayCost) : 0;
+
   const activeDiffs = diffs.filter((d) => !d.isRemoved);
   const totalPayingMTD = activeDiffs.reduce((s, d) => s + (d.payingUsers ?? 0), 0);
   const totalFreeMTD = activeDiffs.reduce((s, d) => s + (d.freeUsers ?? 0), 0);
@@ -219,10 +312,10 @@ export function generateReport(accountSummary, diffs, reportUrl = null, isFirstR
     card('Total Cost', money(accountSummary.totalCost), 'month to date', 'var(--c-amber)', 'Platform compute costs deducted from your earnings'),
     card('Net Profit', money(accountSummary.netProfit), 'month to date', 'var(--c-green)', 'Revenue minus cost. Your take-home for the month so far'),
     card('Profit Margin', pct(accountSummary.overallMargin), 'month to date', 'var(--c-blue)', 'Net profit as a percentage of total revenue'),
-    card('Revenue Today', money(accountSummary.todayRevenue), 'today', 'var(--c-teal)', 'Revenue earned from actor runs today'),
-    card('Cost Today', money(accountSummary.todayCost), 'today', 'var(--c-amber)', 'Platform compute costs incurred today'),
-    card('Profit Today', money(todayProfit), 'today', todayProfit >= 0 ? 'var(--c-green)' : 'var(--c-red)', 'Revenue minus cost for today'),
-    card('Runs Today', num(actorRunsTotal), null, 'var(--c-blue)', runsTooltip),
+    card('Revenue Today', money(accountSummary.todayRevenue), 'today', 'var(--c-teal)', 'Revenue earned from actor runs today', cmpMoney(prevAccountSummary?.todayRevenue, accountSummary.todayRevenue)),
+    card('Cost Today', money(accountSummary.todayCost), 'today', 'var(--c-amber)', 'Platform compute costs incurred today', cmpMoney(prevAccountSummary?.todayCost, accountSummary.todayCost)),
+    card('Profit Today', money(todayProfit), 'today', todayProfit >= 0 ? 'var(--c-green)' : 'var(--c-red)', 'Revenue minus cost for today', cmpMoney(prevTodayProfit, todayProfit)),
+    card('Runs Today', num(actorRunsTotal), null, 'var(--c-blue)', runsTooltip, cmpNum(prevAccountSummary?.todayRuns, actorRunsTotal)),
     card('Success Rate', `${num(successRate, 1)}%`, 'today', successRate >= 90 ? 'var(--c-green)' : 'var(--c-amber)', 'Percentage of today\'s runs that completed successfully'),
     card('Paying Users MTD', num(totalPayingMTD), 'month to date', 'var(--c-teal)', 'Cumulative unique paying users across all actors this month'),
     card('Free Users MTD', num(totalFreeMTD), 'month to date', 'var(--c-blue)', 'Cumulative unique free users across all actors this month'),
@@ -247,9 +340,9 @@ export function generateReport(accountSummary, diffs, reportUrl = null, isFirstR
 </div>` : '';
 
   const sections = [
-    renderSection(red, 'red', 'Needs Attention', true),
-    renderSection(yellow, 'yellow', 'Watch Closely', true),
-    renderSection(green, 'green', 'On Track', false),
+    renderSection(red, 'red', 'Needs Attention', true, trendData),
+    renderSection(yellow, 'yellow', 'Watch Closely', true, trendData),
+    renderSection(green, 'green', 'On Track', false, trendData),
   ].join('\n');
 
   return `<!DOCTYPE html>
@@ -411,6 +504,10 @@ body {
 .card-sub {
   font-size: 10px; color: var(--text-3); margin-top: 8px;
   text-transform: uppercase; letter-spacing: .8px;
+}
+.card-comp {
+  font-size: 11px; color: var(--text-3); margin-top: 6px;
+  font-family: var(--mono); line-height: 1.5;
 }
 
 /* ── REVENUE SPLIT PANEL ── */
@@ -645,6 +742,94 @@ body {
   border: 5px solid transparent; border-top-color: var(--bg-4);
   z-index: 201; pointer-events: none;
 }
+
+/* ── GAINERS / LOSERS ── */
+.gl-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media(max-width:600px) { .gl-grid { grid-template-columns: 1fr; } }
+.gl-col {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 16px 18px;
+}
+.gl-head {
+  font-size: 9px; font-weight: 700; letter-spacing: 2px;
+  text-transform: uppercase; margin-bottom: 10px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.gl-head-gain { color: var(--c-green); }
+.gl-head-loss { color: var(--c-red); }
+.gl-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.gl-item:last-child { border-bottom: none; }
+.gl-name {
+  font-size: 13px; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 65%;
+}
+.gl-delta {
+  font-family: var(--mono); font-size: 13px; font-weight: 500;
+  white-space: nowrap;
+}
+.gl-pos { color: var(--c-green); }
+.gl-neg { color: var(--c-red); }
+.gl-empty { font-size: 12px; color: var(--text-3); text-align: center; padding: 8px 0; }
+
+/* ── SEARCH BAR ── */
+.search-wrap { margin: 0 0 12px; }
+.actor-search {
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-md);
+  border-radius: var(--r);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  outline: none;
+  transition: border-color .15s;
+}
+.actor-search::placeholder { color: var(--text-3); }
+.actor-search:focus { border-color: var(--c-blue); }
+
+/* ── SORT BUTTONS ── */
+.sort-btns {
+  display: flex; gap: 4px; margin-left: auto; margin-right: 8px;
+}
+.sort-btn {
+  background: var(--bg-4);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-3);
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+  white-space: nowrap;
+}
+.sort-btn:hover { background: var(--bg-3); color: var(--text-2); border-color: var(--border-md); }
+.sort-btn.sort-asc,
+.sort-btn.sort-desc { background: rgba(91,141,239,.12); color: var(--c-blue); border-color: rgba(91,141,239,.3); }
+.sort-btn.sort-asc::after  { content: ' ↑'; }
+.sort-btn.sort-desc::after { content: ' ↓'; }
+
+/* ── SPARKLINES ── */
+.dsec-spark { grid-column: 1 / -1; }
+.spark-row { display: flex; gap: 24px; align-items: flex-end; flex-wrap: wrap; }
+.spark-item { display: flex; flex-direction: column; gap: 4px; }
+.spark-label {
+  font-size: 10px; color: var(--text-3);
+  letter-spacing: .5px; text-transform: uppercase;
+}
 </style>
 </head>
 <body>
@@ -672,6 +857,8 @@ body {
   <div class="blk-title">Revenue Source</div>
   ${revSplit}
 
+  ${gainersLosersSection(diffs, isFirstRun)}
+
   ${firstRunBanner}
 
   <div class="status-row">
@@ -690,6 +877,9 @@ body {
   </div>
 
   <div class="blk-title">Actor Breakdown</div>
+  <div class="search-wrap">
+    <input type="text" id="actor-search" class="actor-search" placeholder="Search actors…" autocomplete="off" spellcheck="false">
+  </div>
   ${sections}
 
 </div>
@@ -719,6 +909,38 @@ document.querySelectorAll('.card').forEach(function(c, i) {
     c.style.transform = '';
   }, 40 + i * 30);
 });
+// Live search / filter across all actor rows
+var searchInput = document.getElementById('actor-search');
+if (searchInput) {
+  searchInput.addEventListener('input', function() {
+    var q = this.value.toLowerCase().trim();
+    document.querySelectorAll('.arow').forEach(function(row) {
+      var name = row.getAttribute('data-name') || '';
+      row.style.display = (!q || name.includes(q)) ? '' : 'none';
+    });
+  });
+}
+// Sort actors inside a section by a numeric data attribute
+function sortSection(bodyId, field, btn) {
+  var body = document.getElementById(bodyId);
+  if (!body) return;
+  var currentDir = btn.getAttribute('data-dir') || 'desc';
+  var newDir = currentDir === 'desc' ? 'asc' : 'desc';
+  // Reset all sort buttons in this section header
+  btn.closest('.sec-hdr').querySelectorAll('.sort-btn').forEach(function(b) {
+    b.classList.remove('sort-asc', 'sort-desc');
+    b.removeAttribute('data-dir');
+  });
+  btn.classList.add(newDir === 'desc' ? 'sort-desc' : 'sort-asc');
+  btn.setAttribute('data-dir', newDir);
+  var rows = Array.from(body.querySelectorAll(':scope > .arow'));
+  rows.sort(function(a, b) {
+    var av = parseFloat(a.getAttribute('data-' + field) || '0');
+    var bv = parseFloat(b.getAttribute('data-' + field) || '0');
+    return newDir === 'desc' ? bv - av : av - bv;
+  });
+  rows.forEach(function(r) { body.appendChild(r); });
+}
 </script>
 </body>
 </html>`;
