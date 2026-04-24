@@ -4,6 +4,7 @@
     "title": "Apify Actor Monitor",
     "description": "Monitors your Apify account actor performance. Takes daily snapshots, computes diffs, and delivers an HTML report via email.",
     "version": "0.1",
+    "buildTag": "beta",
     "input": "./input_schema.json",
     "dockerfile": "../Dockerfile",
     "readme": "../README.md",

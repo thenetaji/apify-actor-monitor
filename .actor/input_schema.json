@@ -22,7 +22,23 @@
             "description": "Name of the named Key-Value Store used for persistent snapshots across runs.",
             "default": "apify-actor-monitor",
             "editor": "textfield"
+        },
+        "compareDate": {
+            "title": "Compare Against Date (YYYY-MM-DD)",
+            "type": "string",
+            "description": "Optional. Compare today's snapshot against a specific past date instead of yesterday. Useful for month-start baselines or investigating a specific historical point. Format: YYYY-MM-DD.",
+            "editor": "textfield"
+        },
+        "snapshotRetentionDays": {
+            "title": "Snapshot Retention (days)",
+            "type": "integer",
+            "description": "Snapshots older than this many days are automatically deleted from the Key-Value Store to prevent unbounded growth. Minimum 7 days. Default: 30 days.",
+            "default": 30,
+            "minimum": 7,
+            "editor": "number"
         }
     },
-    "required": ["apifyToken"]
+    "required": [
+        "apifyToken"
+    ]
 }

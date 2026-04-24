@@ -1,8 +1,8 @@
 import { Actor, log } from 'apify';
 import { ApifyClient } from 'apify-client';
 import { getAccountSnapshot } from './fetcher.js';
-import { openStore, saveSnapshot, loadLatestSnapshot, loadSnapshotForDate } from './storage.js';
-import { computeDiffs } from './diff.js';
+import { openStore, saveSnapshot, loadLatestSnapshot, loadSnapshotForDate, deleteOldSnapshots } from './storage.js';
+import { computeDiffs, buildTrendData } from './diff.js';
 import { generateReport } from './report.js';
 
 await Actor.init();
@@ -14,11 +14,18 @@ try {
         apifyToken,
         emailTo,
         snapshotStoreName = 'apify-actor-monitor',
+        compareDate = null,
+        snapshotRetentionDays = 30,
     } = input ?? {};
 
     if (!apifyToken) throw new Error('Input "apifyToken" is required');
 
-    log.info('Actor started', { snapshotStoreName, emailTo: emailTo ?? '(not set)' });
+    log.info('Actor started', {
+        snapshotStoreName,
+        emailTo: emailTo ?? '(not set)',
+        compareDate: compareDate ?? '(auto: yesterday)',
+        snapshotRetentionDays,
+    });
 
     // Fetch current snapshot
     log.info('Fetching account snapshot from Apify analytics API...');
@@ -31,11 +38,18 @@ try {
     // Open named KV store
     const store = await openStore(snapshotStoreName);
 
-    // Load previous snapshot — prefer yesterday's dated snapshot so that
-    // multiple same-day runs always compare against the same baseline.
-    // Falls back to the latest saved snapshot (e.g. skipped a day, first run).
-    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const prevSnapshot = (await loadSnapshotForDate(store, yesterday)) ?? (await loadLatestSnapshot(store));
+    // Load previous snapshot for comparison.
+    // If compareDate is supplied, use that exact date as the baseline.
+    // Otherwise prefer yesterday's dated snapshot (consistent across same-day re-runs),
+    // falling back to the latest snapshot in case of gaps.
+    let prevSnapshot;
+    if (compareDate) {
+        log.info('Using custom compareDate as baseline', { compareDate });
+        prevSnapshot = (await loadSnapshotForDate(store, compareDate)) ?? (await loadLatestSnapshot(store));
+    } else {
+        const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+        prevSnapshot = (await loadSnapshotForDate(store, yesterday)) ?? (await loadLatestSnapshot(store));
+    }
 
     // Compute diffs
     const diffs = computeDiffs(prevSnapshot, currSnapshot);
@@ -45,8 +59,9 @@ try {
         green: diffs.filter((d) => d.status === 'green').length,
     });
 
-    // Save new snapshot
+    // Save new snapshot and clean up old ones beyond the retention window
     await saveSnapshot(store, currSnapshot);
+    await deleteOldSnapshots(store, snapshotRetentionDays);
 
     // Generate HTML report and save to KV store
     const { accountSummary } = currSnapshot;
@@ -55,10 +70,57 @@ try {
     // Build a direct link to the stored HTML file (requires Apify token to view)
     const reportUrl = `https://api.apify.com/v2/key-value-stores/${store.id}/records/${reportKey}`;
 
+    // Build 7-day trend from per-actor daily API data — no stored snapshots needed.
+    // The API already returns the full month's daily stats for every actor.
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(Date.now() - (6 - i) * 86_400_000);
+        return d.toISOString().slice(0, 10);
+    });
+    const activeActors = currSnapshot.actorSnapshots.filter((a) => !a.fetchError);
+    const syntheticSnapshots = last7Days.map((date) => ({
+        accountSummary: { today: date },
+        actorSnapshots: activeActors.map((a) => ({
+            actorId: a.actorId,
+            actorName: a.actorName,
+            actorTitle: a.actorTitle,
+            todayRuns: a.dailyRunStats?.[date]?.TOTAL ?? 0,
+            todayRevenue: a.dailyRevenueStats?.[date]?.allUsersUsd?.revenueUsd ?? 0,
+        })),
+    }));
+    const trendData = buildTrendData(syntheticSnapshots);
+    log.info('Trend data built from daily API stats', { actorsWithTrend: trendData.size, days: last7Days.length });
+
     log.info('Generating HTML report...');
     const isFirstRun = prevSnapshot === null;
     const fetchErrorCount = currSnapshot.actorSnapshots.filter((a) => a.fetchError).length;
-    const html = generateReport(accountSummary, diffs, reportUrl, isFirstRun, fetchErrorCount);
+
+    // Build account-level comparison summary.
+    // The live API response already contains all daily data for the current month inside
+    // accountSummary.dailyProfit / dailyUsers — so we always prefer that over a stored
+    // snapshot (it's more accurate: stored snapshots reflect the time they were taken,
+    // not the final end-of-day totals).
+    const compDate = compareDate ?? new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const dailyProfitEntry = accountSummary.dailyProfit?.[compDate];
+    const dailyUserEntry = accountSummary.dailyUsers?.[compDate] ?? {};
+    // Sum per-actor daily runs for compDate (account-level run API returns empty dailyStats)
+    const compDateRuns = activeActors.reduce((sum, a) => sum + (a.dailyRunStats?.[compDate]?.TOTAL ?? 0), 0);
+    let prevAccountSummaryForReport;
+    if (dailyProfitEntry) {
+        prevAccountSummaryForReport = {
+            today: compDate,
+            todayRevenue: dailyProfitEntry.allUsersUsd?.revenueUsd ?? 0,
+            todayCost: dailyProfitEntry.allUsersUsd?.costUsd ?? 0,
+            todayRuns: compDateRuns,
+            todayPayingUsers: dailyUserEntry.payingUsers ?? 0,
+            todayFreeUsers: dailyUserEntry.freeUsers ?? 0,
+        };
+        log.info('Built comparison summary from daily API data', { compDate, revenue: prevAccountSummaryForReport.todayRevenue });
+    } else {
+        prevAccountSummaryForReport = prevSnapshot?.accountSummary ?? null;
+        log.info('No daily API data for compDate — falling back to stored snapshot', { compDate });
+    }
+
+    const html = generateReport(accountSummary, diffs, reportUrl, isFirstRun, fetchErrorCount, trendData, prevAccountSummaryForReport);
     if (isFirstRun) log.info('First run detected — baseline snapshot saved. Full comparison report available next run.');
     await store.setValue(reportKey, html, { contentType: 'text/html' });
     log.info('HTML report saved to KV store', { key: reportKey, reportUrl });

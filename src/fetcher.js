@@ -2,18 +2,93 @@ import { log } from 'apify';
 
 const BASE_URL = 'https://console-backend.apify.com';
 
-async function apiFetch(url, token) {
-    const res = await fetch(url, {
-        headers: {
-            'accept': 'application/json, text/plain, */*',
-            'authorization': `Bearer ${token}`,
-            'Referer': 'https://console.apify.com/',
-        },
-    });
-    if (!res.ok) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ── Adaptive Rate Limiter ─────────────────────────────────────────────────────
+//
+// Maintains a shared per-session request delay that shrinks on success (AIMD)
+// and grows on 429 / 5xx responses. All callers share a single promise queue
+// so concurrent workers naturally stagger without racing each other.
+class AdaptiveRateLimiter {
+    constructor({ minDelay = 100, maxDelay = 10_000, initialDelay = 200 } = {}) {
+        this.minDelay = minDelay;
+        this.maxDelay = maxDelay;
+        this.currentDelay = initialDelay;
+        this._queue = Promise.resolve();
+    }
+
+    // Gradually recover speed after a run of successes (multiplicative decrease)
+    onSuccess() {
+        this.currentDelay = Math.max(this.minDelay, this.currentDelay * 0.9);
+    }
+
+    // Back off on 429; honour Retry-After header when present
+    onRateLimit(retryAfterMs = null) {
+        const backoff = retryAfterMs != null ? retryAfterMs : this.currentDelay * 2;
+        this.currentDelay = Math.min(this.maxDelay, backoff);
+        log.warning(`Rate limiter: 429 — delay set to ${Math.round(this.currentDelay)}ms`);
+    }
+
+    // Mild back-off on transient server errors
+    onServerError() {
+        this.currentDelay = Math.min(this.maxDelay, this.currentDelay * 1.5);
+        log.warning(`Rate limiter: 5xx — delay set to ${Math.round(this.currentDelay)}ms`);
+    }
+
+    // Enqueue this call through the shared chain; each caller waits for the
+    // previous one's delay to elapse before its own delay begins.
+    waitAndConsume() {
+        const delay = this.currentDelay + Math.random() * 50; // ±50 ms jitter
+        this._queue = this._queue.then(() => sleep(delay));
+        return this._queue;
+    }
+}
+
+const rateLimiter = new AdaptiveRateLimiter();
+
+// ── Core fetch wrapper with retry ─────────────────────────────────────────────
+async function apiFetch(url, token, maxRetries = 5) {
+    let attempt = 0;
+    while (true) {
+        await rateLimiter.waitAndConsume();
+        const res = await fetch(url, {
+            headers: {
+                'accept': 'application/json, text/plain, */*',
+                'authorization': `Bearer ${token}`,
+                'Referer': 'https://console.apify.com/',
+            },
+        });
+
+        if (res.ok) {
+            rateLimiter.onSuccess();
+            return res.json();
+        }
+
+        if (res.status === 429) {
+            attempt++;
+            const retryAfterSec = res.headers.get('Retry-After');
+            const retryAfterMs = retryAfterSec != null ? Number(retryAfterSec) * 1000 : null;
+            rateLimiter.onRateLimit(retryAfterMs);
+            if (attempt >= maxRetries) {
+                throw new Error(`Rate limit (429) exceeded after ${maxRetries} retries for ${url}`);
+            }
+            log.warning(`Retrying after rate limit [${attempt}/${maxRetries}]`, { url });
+            continue;
+        }
+
+        if (res.status >= 500) {
+            attempt++;
+            rateLimiter.onServerError();
+            if (attempt >= maxRetries) {
+                throw new Error(`Server error ${res.status} after ${maxRetries} retries for ${url}`);
+            }
+            log.warning(`Retrying after server error ${res.status} [${attempt}/${maxRetries}]`, { url });
+            continue;
+        }
+
+        // Any other 4xx — not retryable
         throw new Error(`API ${res.status} for ${url}`);
     }
-    return res.json();
 }
 
 function getCurrentMonth() {
@@ -26,8 +101,6 @@ function getCurrentMonth() {
 function getTodayDate() {
     return new Date().toISOString().slice(0, 10);
 }
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Simple concurrency pool — runs `fns` with at most `limit` in-flight at once,
 // preserving result order. Adds `delayMs` between each task start.
@@ -129,16 +202,12 @@ export async function getAccountSnapshot(token) {
 
     log.info('Fetching account-wide analytics', { month, today });
 
+    // The adaptive rate limiter in apiFetch handles pacing; no manual sleeps needed.
     const breakdown = await fetchActorBreakdown(token, month);
-    await sleep(300);
     const accountRunStats = await fetchAccountRunStats(token, month);
-    await sleep(300);
     const accountUserCounts = await fetchAccountUserCounts(token, month);
-    await sleep(300);
     const accountProfitMargin = await fetchAccountProfitMargin(token, month);
-    await sleep(300);
     const accountCostPerK = await fetchAccountCostPerThousand(token, month);
-    await sleep(300);
 
     // Build a quick lookup: actorId → breakdown entry
     const bdMap = {};
@@ -156,11 +225,8 @@ export async function getAccountSnapshot(token) {
         const actorNum = ++actorIdx;
         try {
             const runStats = await fetchActorRunStats(token, actorId, month);
-            await sleep(300);
             const profitMargin = await fetchActorProfitMargin(token, actorId, month);
-            await sleep(300);
             const costPerK = await fetchActorCostPerThousand(token, actorId, month);
-            await sleep(300);
             const userCounts = await fetchActorUserCounts(token, actorId, month);
             log.info(`Completed actor stats [${actorNum}/${ownedActors.length}]`, {
                 actorId,
@@ -177,8 +243,8 @@ export async function getAccountSnapshot(token) {
         }
     });
 
-    // Concurrency cap of 4, 300 ms stagger between task starts
-    const perActorResults = await pAll(perActorFns, 4, 300);
+    // Concurrency cap of 4; per-request pacing is handled by the adaptive rate limiter.
+    const perActorResults = await pAll(perActorFns, 4, 0);
 
     // Build per-actor snapshot objects
     const actorSnapshots = perActorResults.map(
@@ -228,6 +294,10 @@ export async function getAccountSnapshot(token) {
                 todayFreeUsers: todayUser.freeUsers ?? 0,
                 todayRevenue: todayProfit.revenueUsd ?? 0,
                 todayCost: todayProfit.costUsd ?? 0,
+                // Full daily breakdowns for the current month — used to build trend sparklines
+                // and per-day comparisons without relying on stored historical snapshots.
+                dailyRunStats: runStats?.dailyStats ?? {},
+                dailyRevenueStats: profitMargin?.dailyProfitMarginStats ?? {},
             };
         },
     );
@@ -270,6 +340,10 @@ export async function getAccountSnapshot(token) {
         payingUsersChange: (accTodayUser.payingUsers ?? 0) - (accountUserCounts?.[yesterday]?.payingUsers ?? 0),
         freeUsersChange: (accTodayUser.freeUsers ?? 0) - (accountUserCounts?.[yesterday]?.freeUsers ?? 0),
         avgCostPer1000Results: accountCostPerK?.totalActorRunsCost?.avgActorRunsCost ?? 0,
+        // Daily breakdown for the current month — enables any-date comparison without needing stored snapshots.
+        // Keys are YYYY-MM-DD strings; values are the API's profit/user stat objects.
+        dailyProfit: accountProfitMargin?.dailyProfitMarginStats ?? {},
+        dailyUsers: accountUserCounts ?? {},
     };
 
     return { accountSummary, actorSnapshots };

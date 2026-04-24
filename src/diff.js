@@ -148,3 +148,35 @@ export function computeDiffs(prevSnapshot, currSnapshot) {
 
     return diffs;
 }
+
+/**
+ * Pure function — builds per-actor trend data from an ordered array of snapshots.
+ *
+ * @param {Array} snapshots  Snapshot objects ordered oldest → newest (as returned
+ *                           by loadLastNSnapshots). Each entry has the same shape as
+ *                           the objects written by saveSnapshot.
+ * @returns {Map<string, { dates: string[], runs: number[], revenue: number[] }>}
+ */
+export function buildTrendData(snapshots) {
+    const trendMap = new Map();
+
+    for (const snapshot of snapshots) {
+        const date = snapshot?.accountSummary?.today;
+        if (!date) continue;
+
+        for (const actor of snapshot?.actorSnapshots ?? []) {
+            if (actor.fetchError) continue;
+            const { actorId, todayRuns = 0, todayRevenue = 0 } = actor;
+
+            if (!trendMap.has(actorId)) {
+                trendMap.set(actorId, { dates: [], runs: [], revenue: [] });
+            }
+            const entry = trendMap.get(actorId);
+            entry.dates.push(date);
+            entry.runs.push(todayRuns);
+            entry.revenue.push(todayRevenue);
+        }
+    }
+
+    return trendMap;
+}

@@ -44,3 +44,53 @@ export async function loadSnapshotForDate(store, date) {
     }
     return snapshot ?? null;
 }
+
+/**
+ * Loads the last `n` dated snapshots (oldest → newest).
+ * Useful for building trend sparklines and week-over-week comparisons.
+ */
+export async function loadLastNSnapshots(store, n = 7) {
+    const allKeys = [];
+
+    // forEachKey is the correct SDK v3 API for iterating KV store keys
+    await store.forEachKey((key) => {
+        if (/^snapshot_\d{4}-\d{2}-\d{2}$/.test(key)) {
+            allKeys.push(key);
+        }
+    });
+
+    // ISO date strings sort lexicographically, so alphabetical = chronological
+    allKeys.sort();
+    const recentKeys = allKeys.slice(-n);
+
+    const snapshots = await Promise.all(recentKeys.map((key) => store.getValue(key)));
+    const valid = snapshots.filter(Boolean);
+    log.info(`Loaded ${valid.length} historical snapshot(s) for trending (requested ${n})`);
+    return valid;
+}
+
+/**
+ * Deletes dated snapshots older than `retentionDays` days.
+ * Only removes `snapshot_YYYY-MM-DD` keys; `snapshot_latest` is never touched.
+ */
+export async function deleteOldSnapshots(store, retentionDays = 30) {
+    const cutoffDate = new Date(Date.now() - retentionDays * 86_400_000).toISOString().slice(0, 10);
+    const toDelete = [];
+
+    await store.forEachKey((key) => {
+        const match = key.match(/^snapshot_(\d{4}-\d{2}-\d{2})$/);
+        if (match && match[1] < cutoffDate) {
+            toDelete.push(key);
+        }
+    });
+
+    if (toDelete.length === 0) {
+        log.info('Snapshot cleanup: nothing to delete', { retentionDays, cutoffDate });
+        return;
+    }
+
+    for (const key of toDelete) {
+        await store.setValue(key, null);
+    }
+    log.info(`Snapshot cleanup: deleted ${toDelete.length} snapshot(s) older than ${retentionDays} days`, { cutoffDate });
+}
